@@ -54,6 +54,9 @@ class ExperimentRobotsuiteConfig(ExperimentConfig):
     # Optional device for evaluation
     device: Optional[str] = None
 
+    # Optional add_patches parameter
+    add_patches: Optional[bool] = False
+
     def validate_config(self):
         """
         Validates the configuration to see if the values are feasible.
@@ -147,5 +150,6 @@ class ExperimentRobotsuiteConfig(ExperimentConfig):
                 target_video_path=config.get("target_video_path"),
                 source_gripper_type=config.get("source_gripper_type"),
                 target_gripper_type=config.get("target_gripper_type"),
-                device=config.get("device", "cuda")
+                device=config.get("device", "cuda"),
+                add_patches=config.get("add_patches", False),
             )

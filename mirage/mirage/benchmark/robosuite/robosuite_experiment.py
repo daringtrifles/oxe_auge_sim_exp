@@ -87,11 +87,11 @@ class RobosuiteExperiment:
 
         if self._config.source_video_path:
             source_agent_args.append("--video_path")
-            source_agent_args.append(self._config.source_gripper_type)
+            source_agent_args.append(self._config.source_video_path)
 
         if self._config.target_video_path:
             target_agent_args.append("--video_path")
-            target_agent_args.append(self._config.target_gripper_type)
+            target_agent_args.append(self._config.target_video_path)
         
         if self._config.enable_inpainting:
             source_agent_args.append("--inpaint_enabled")
@@ -115,6 +115,10 @@ class RobosuiteExperiment:
 
         if self._config.passive:
             source_agent_args.append("--passive")
+
+        if self._config.add_patches:
+            source_agent_args.append("--add_patches")
+            target_agent_args.append("--add_patches")
 
         self._source_process = subprocess.Popen(source_agent_args)
         self._target_process = subprocess.Popen(target_agent_args)

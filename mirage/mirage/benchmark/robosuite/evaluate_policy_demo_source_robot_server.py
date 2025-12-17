@@ -1,4 +1,5 @@
 import argparse
+import pdb
 import json
 import h5py
 import imageio
@@ -18,6 +19,8 @@ from robomimic.envs.env_base import EnvBase
 import robomimic.utils.env_utils as EnvUtils
 from robomimic.algo import RolloutPolicy
 import robosuite.utils.transform_utils as T
+from robosuite.wrappers import DomainRandomizationWrapper
+
 from robosuite.utils.mjcf_utils import array_to_string, string_to_array
 import robosuite.utils.camera_utils as camera_utils
 from mirage.gripper_interpolation.robosuite.gripper_interpolator import GripperInterpolator
@@ -34,8 +37,41 @@ TASK_OBJECT_DICT = {"Lift": ["cube_joint0"],
                     "Square_D0": ["SquareNut_joint0"],
                     "Coffee_D0": ["coffee_pod_joint0", "coffee_machine_joint0", "coffee_machine_lid_main_joint0"]
                     }
+import random  
+import cv2
+import numpy as np
+import random
 
+def add_black_patches(
+        image: np.ndarray,
+        num_patches: int = 10,
+        max_patch_size_factor: float = 0.15,
+        seed: int | None = None
+    ) -> np.ndarray:
+    if seed is not None:
+        rng = np.random.default_rng(seed)   # ← local, independent RNG
+    else:
+        rng = np.random.default_rng()
+    print(seed, 'seed')
+    chw_input = image.shape[0] == 3 and image.ndim == 3
+    img = np.transpose(image, (1, 2, 0)).copy() if chw_input else image.copy()
 
+    h, w = img.shape[:2]
+    max_side = int(min(h, w) * max_patch_size_factor)
+    if max_side < 1:
+        return image
+
+    for _ in range(num_patches):
+        cx = rng.integers(w // 5, 4 * w // 5)
+        cy = rng.integers(0, h // 20)
+        half_w = rng.integers(1, max_side + 1)
+        half_h = rng.integers(1, max_side + 1)
+
+        x1, x2 = max(cx - half_w, 0), min(cx + half_w, w - 1)
+        y1, y2 = max(cy - half_h, 0), min(cy + half_h, h - 1)
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 0), thickness=-1)
+
+    return np.transpose(img, (2, 0, 1)) if chw_input else img
 
 class Data:
     obs = {}
@@ -49,7 +85,7 @@ class Data:
 tracking_error_history = []
 
 class Robot:
-    def __init__(self, robot_name=None, ckpt_path=None, render=False, video_path=None, rollout_horizon=None, seed=None, dataset_path=None, demo_path=None, inpaint_enabled=False, save_paired_images=False, save_paired_images_folder_path=None, device=None, save_failed_demos=False, gripper_types=None, save_stats_path=None):
+    def __init__(self, robot_name=None, ckpt_path=None, render=False, video_path=None, rollout_horizon=None, seed=None, dataset_path=None, demo_path=None, inpaint_enabled=False, save_paired_images=False, save_paired_images_folder_path=None, device=None, save_failed_demos=False, gripper_types=None, save_stats_path=None, add_patches=False):
         """_summary_
 
         Args:
@@ -61,6 +97,7 @@ class Robot:
             seed (int, optional): 
             connection (socket, optional):
         """
+        
         self.robot_name = robot_name
         self.ckpt_path = ckpt_path
         self.render = render
@@ -70,11 +107,20 @@ class Robot:
         self.hdf5_path = demo_path
         self.use_demo = (demo_path is not None) # if True, use demo playback; if false, use source policy
         self.write_video = (video_path is not None)
-        self.video_writer = imageio.get_writer(video_path, fps=20) if self.write_video else None
+        self.count_file = os.path.join(os.path.dirname(video_path) if video_path else ".", "execution_count.txt")
+        
+        # Read current count from file if it exists
+    
+        # Increment count and write back to file
+        self.execution_count = 0
+        self.video_writer = imageio.get_writer(f'{self.execution_count}_{video_path}', fps=20) if self.write_video else None
+        # Keep count of executions in a file
+       
         self.inpaint_writer = imageio.get_writer(os.path.join(os.path.dirname(self.video_path), "inpaint_video.mp4"), fps=20) if self.video_writer is not None else None
         self.save_failed_demos = save_failed_demos
         self.gripper_types = gripper_types
         self.save_stats_path = os.path.dirname(save_stats_path)
+        self.add_patches = add_patches
 
         self.inpaint_enabled = inpaint_enabled
         self.save_paired_images = save_paired_images
@@ -138,6 +184,7 @@ class Robot:
             self.policy, self.ckpt_dict = FileUtils.policy_from_checkpoint(ckpt_path=self.ckpt_path, device=self.device, verbose=True)
 
             # create environment from saved checkpoint
+
             self.env, _ = FileUtils.env_from_checkpoint(
                 ckpt_dict=self.ckpt_dict, 
                 render=self.render, 
@@ -146,6 +193,9 @@ class Robot:
                 robot=robot_name,
                 gripper_types=self.gripper_types
             )
+
+            #self.env.env.env = DomainRandomizationWrapper(self.env.env.env)
+
             self.control_delta = self.ckpt_dict["env_metadata"]['env_kwargs']['controller_configs']['control_delta']
             self.task = self.ckpt_dict["env_metadata"]['env_name']
             
@@ -183,15 +233,17 @@ class Robot:
             
 
     def set_seed(self, seed):
+        self.seed = seed
         np.random.seed(seed)
         torch.manual_seed(seed)
+        random.seed(seed)
         
 
     def initialize_robot(self):
         self.obs = self.env.reset()
         state_dict_source = self.env.get_state()
         self.obs = self.env.reset_to(state_dict_source) # necessary for robosuite tasks for deterministic action playback
-
+        
     def compute_pose_error(self, target_pose):
         starting_pose = self.compute_eef_pose()
         if self.num_robots == 1:
@@ -223,6 +275,7 @@ class Robot:
                 action[6] = 0
                 action[7:10] = target_pose[7:10]
                 action[10:13] = T.quat2axisangle(target_pose[10:])
+            
             self.obs, _, _, _ = self.env.step(action)
 
             error, starting_pose = self.compute_pose_error(target_pose)
@@ -370,21 +423,24 @@ class Robot:
         """target_robot_delta_action only affects the target robot. Default is to track the absolute pose of the source robot."""
         avg_rollout_stats = dict(Seeds=[], Return=[], Horizon=[], Success_Rate=[], Num_Success=[])
         inpaint_data_for_analysis = []
+        print(seeds, 'seeds')
         for seed in seeds:
-            print("Seed: ", seed)
+            self.seed = seed
+            print("Seed_check: ", seed)
             self.set_seed(seed)
             rollout_stats = []
             if self.use_demo:
                 rollout_num_episodes = min(rollout_num_episodes, len(self.demos))
-            for i in range(rollout_num_episodes):
+            for i in range(0, rollout_num_episodes):
                 self.set_seed(seed * rollout_num_episodes +i)
                 if i==0:
                     import os
                     if (self.inpaint_enabled and os.path.exists(self.inpaint_data_for_analysis_path_temp)):
                         os.remove(self.inpaint_data_for_analysis_path_temp) # remove that file
+                self.execution_count = i
                 print("Rollout {}/{}".format(i + 1, rollout_num_episodes))
                 stats, traj, inpaint_data_for_analysis_1traj = self.rollout_robot(
-                    video_skip=video_skip,
+                    video_skip=1,
                     return_obs=self.write_dataset,
                     camera_names=camera_names,
                     set_object_state=True,
@@ -473,8 +529,8 @@ class Robot:
 
 
 class SourceRobot(Robot):
-    def __init__(self, robot_name=None, ckpt_path=None, render=False, video_path=None, rollout_horizon=None, seed=None, dataset_path=None, connection=None, port = 50007, passive=True, demo_path=None, inpaint_enabled=False, forward_dynamics_model_path='', save_paired_images=False, save_paired_images_folder_path=None, device=None, save_failed_demos=False, naive=False, save_stats_path=None):
-        super().__init__(robot_name=robot_name, ckpt_path=ckpt_path, render=render, video_path=video_path, rollout_horizon=rollout_horizon, seed=seed, dataset_path=dataset_path, demo_path=demo_path, inpaint_enabled=inpaint_enabled, save_paired_images=save_paired_images, save_paired_images_folder_path=save_paired_images_folder_path, device=device, save_failed_demos=save_failed_demos, save_stats_path=save_stats_path)
+    def __init__(self, robot_name=None, ckpt_path=None, render=False, video_path=None, rollout_horizon=None, seed=None, dataset_path=None, connection=None, port = 50007, passive=True, demo_path=None, inpaint_enabled=False, forward_dynamics_model_path='', save_paired_images=False, save_paired_images_folder_path=None, device=None, save_failed_demos=False, naive=False, save_stats_path=None, add_patches=False):
+        super().__init__(robot_name=robot_name, ckpt_path=ckpt_path, render=render, video_path=video_path, rollout_horizon=rollout_horizon, seed=seed, dataset_path=dataset_path, demo_path=demo_path, inpaint_enabled=inpaint_enabled, save_paired_images=save_paired_images, save_paired_images_folder_path=save_paired_images_folder_path, device=device, save_failed_demos=save_failed_demos, save_stats_path=save_stats_path, add_patches=add_patches)
         
         if connection:
             HOST = 'localhost'
@@ -505,7 +561,7 @@ class SourceRobot(Robot):
         and returns the rollout trajectory.
         
         The source robot will:
-            - optionally receive the target object state and/or target robot pose from the target robot, and then set its environment to that state and/or pose.
+            - optionally receive the target object state and target robot pose from the target robot, and then set its environment to that state and/or pose.
             - Then, the source robot will execute the action from the policy as usual from its own environment.
             - Then, it will send the action command and the actual achieved pose to the target robot.
         
@@ -524,6 +580,7 @@ class SourceRobot(Robot):
         # assert isinstance(self.env, EnvBase)
         # assert isinstance(self.policy, RolloutPolicy)
 
+        self.video_writer = imageio.get_writer(f'{self.execution_count}_{self.video_path}', fps=20) if self.write_video else None
         if self.save_paired_images:            
             os.makedirs(os.path.join(self.save_paired_images_folder_path, "franka_rgb", str(demo_index)), exist_ok=True)
             os.makedirs(os.path.join(self.save_paired_images_folder_path, "franka_mask", str(demo_index)), exist_ok=True)
@@ -551,6 +608,7 @@ class SourceRobot(Robot):
         else:
             self.policy.start_episode()
             self.initialize_robot()
+            
             
         # the source robot is ready to execute the policy
         if self.conn is not None:
@@ -671,8 +729,13 @@ class SourceRobot(Robot):
                     if np.isscalar(v):
                         obs_copy[k] = np.array([v])
 
-                action = self.policy(ob=obs_copy) # get action from policy
-                gt_action = action.copy()                    
+                gt_action = 0
+                #action2 = self.policy(ob=obs_copy) # get action from policy
+                #gt_action = action.copy()                    
+
+                #for i in range(1):
+                    #action = self.policy(ob=obs_copy) # get action from policy
+                    #gt_action += action.copy()/1                    
             
             if self.inpaint_enabled:
                 # ground truth
@@ -705,24 +768,18 @@ class SourceRobot(Robot):
                 #     predicted_state[2] -= 0.015 # the z coordinate is too high
                 action = inpainted_img_action.copy()
                 # action = gt_action.copy()
-
+            
             if self.naive:
                 target_img = np.load(f"{self.save_stats_path}/naive_input.npy", allow_pickle=True)
+                if self.add_patches:
+                    target_img[0] = add_black_patches(target_img[0], seed=self.seed)
+                    target_img[1] = add_black_patches(target_img[1], seed=self.seed)
                 obs_copy = deepcopy(obs)
                 obs_copy["agentview_image"] = target_img
-                
-                agentview_img_new = obs_copy["agentview_image"][0]
-                agentview_img_new = agentview_img_new.transpose(1, 2, 0)
-                cv2.imwrite(f"{self.save_stats_path}/naive_input_1.png", cv2.cvtColor(agentview_img_new, cv2.COLOR_RGB2BGR) * 255)
-
-                agentview_img_new = obs_copy["agentview_image"][1]
-                agentview_img_new = agentview_img_new.transpose(1, 2, 0)
-                cv2.imwrite(f"{self.save_stats_path}/naive_input_2.png", cv2.cvtColor(agentview_img_new, cv2.COLOR_RGB2BGR) * 255)
-
                 action = self.policy(ob=obs_copy)
-                print("Action_Diff:", action - gt_action, np.linalg.norm(action - gt_action))
 
             action, r, done, success = self.step(action, use_delta=self.control_delta, blocking=False, name="Source Robot")
+     
             if success:
                 has_succeeded = True
             next_obs = deepcopy(self.obs)
@@ -735,6 +792,8 @@ class SourceRobot(Robot):
             # regardless of what happens, if we are at the end of the demo, we have to break
             if self.use_demo and step_i >= traj_len - 1:
                 done = True
+            else:
+                done = False
             if self.conn is not None:
                 # Create an instance of Data() to send to client.
                 variable = Data()
@@ -788,7 +847,7 @@ class SourceRobot(Robot):
             if self.render:
                 self.env.render(mode="human", camera_name=camera_names[0]) # on-screen rendering can only support one camera
             if self.write_video:
-                if video_count % video_skip == 0:
+                if video_count % 1 == 0:
                     video_img = []
                     for cam_name in camera_names:
                         video_img.append(self.env.render(mode="rgb_array", height=512, width=512, camera_name=cam_name))
@@ -898,7 +957,7 @@ class SourceRobot(Robot):
                 raise EOFError
             pos += cr
         return data
-
+#python /home/harshapolavaram/mirage/mirage/mirage/benchmark/robosuite/evaluate_policy_demo_source_robot_server.py --agent /home/harshapolavaram/mirage/secondversion/trained_diffusion_policies/exp_11_ur5e_can_clean/20250421045854/models/model_epoch_400.pth --n_rollouts 10 --video_path source_clean.mp4 --save_stats_path /home/harshapolavaram/mirage/
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
@@ -1082,8 +1141,13 @@ if __name__ == "__main__":
         action='store_true',
         help="Set this to true to have a naive highdim policy that passes in the rendered image to the ",
     )
+    parser.add_argument(
+        "--add_patches",
+        action='store_true',
+        help="if True, add black patches to the target robot camera images",
+    )
     args = parser.parse_args()
 
-    source_robot = SourceRobot(robot_name=args.robot_name, ckpt_path=args.agent, render=args.render, video_path=args.video_path, rollout_horizon=args.horizon, seed=None, dataset_path=args.dataset_path, passive=args.passive, port=args.port, connection=args.connection, demo_path=args.demo_path, inpaint_enabled=args.inpaint_enabled, save_paired_images=args.save_paired_images, save_paired_images_folder_path=args.save_paired_images_folder_path, forward_dynamics_model_path=args.forward_dynamics_model_path, device=args.device, save_failed_demos=args.save_failed_demos, save_stats_path=args.save_stats_path, naive=args.naive)
+    source_robot = SourceRobot(robot_name=args.robot_name, ckpt_path=args.agent, render=args.render, video_path=args.video_path, rollout_horizon=args.horizon, seed=None, dataset_path=args.dataset_path, passive=args.passive, port=args.port, connection=args.connection, demo_path=args.demo_path, inpaint_enabled=args.inpaint_enabled, save_paired_images=args.save_paired_images, save_paired_images_folder_path=args.save_paired_images_folder_path, forward_dynamics_model_path=args.forward_dynamics_model_path, device=args.device, save_failed_demos=args.save_failed_demos, save_stats_path=args.save_stats_path, naive=args.naive, add_patches=args.add_patches)
     source_robot.run_experiments(seeds=args.seeds, rollout_num_episodes=args.n_rollouts, video_skip=args.video_skip, camera_names=args.camera_names, dataset_obs=args.dataset_obs, save_stats_path=args.save_stats_path, tracking_error_threshold=args.tracking_error_threshold, num_iter_max=args.num_iter_max, inpaint_online_eval=args.inpaint_enabled)
 

@@ -1,91 +1,109 @@
-# Mirage
-<p align="center">
-  <picture>
-    <img src="https://github.com/BerkeleyAutomation/mirage/assets/52500655/3d724f08-48da-4d7d-9693-09f76dd4eefd">
-  </picture>
-</p>
+# OXE-AugE Simulation
 
-This repository contains the official implementation of Mirage, a novel zero-shot cross-embodiment policy transfer method that uses cross-painting to bridge the visual gap and forward dynamics to bridge the control gap. There is also benchmarking code for across a variety of cross-embodiment scenariors with different robots, tasks, and simulators. Please know that the repo is under active development, please see progress [here](https://github.com/BerkeleyAutomation/mirage/issues/6). 
+This repository evaluates code using [Mirage](https://github.com/BerkeleyAutomation/mirage), and provides scripts for running the simulation experiments in the OXE-AugE paper.
 
-## Supported Robots, Tasks, and Simulators
-<p align="center">
-  <picture>
-    <img src="https://github.com/BerkeleyAutomation/mirage/assets/52500655/0c566742-b398-4c84-b6ec-98ee68245c68">
-  </picture>
-</p>
+Website: https://oxe-auge.github.io/
 
-## Getting Started
-The in-depth documentation for Mirage is found [here](https://berkeleyautomation.github.io/mirage/).
+---
 
-Clone the repo:
-```
-git clone --recurse-submodules git@github.com:BerkeleyAutomation/mirage.git
+## Installation
+
+### 1. Git clone and create the Conda environment
+```bash
+git clone --recurse git@github.com:daringtrifles/oxe_auge_sim_exp.git
+cd oxe_auge_sim_exp
+conda env create -f oxe_auge_sim_exp.yaml
+conda activate oxe_auge_sim_exp
 ```
 
-Install ROS 2 and setup the Gazebo Environment for Inpainting by following the instructions in `mirage/mirage/ros_ws/src/README.md` 
-
-Create a conda environment and install the mirage Python package.
-```
-conda create -n mirage --python=3.10
-cd mirage
-pip install -e .
-```
-
-Follow the installation instructions for the downloaded robomimic, robosuite, and mimicgen_environments submodules by going into them and looking at the README.
-
-Build the ROS workspace by running (from the root of this repo)
-```
-cd mirage/mirage/ros_ws
-colcon build
-source install/setup.bash
+### 2. Install editable packages
+```bash
+pip install -e mirage/
+pip install -e mimicgen_environments/
+pip install -e robomimic-mirage/
+pip install -e robosuite/
 ```
 
-## Usage
-### Robosuite Benchmark
-If inpainting is enabled, only 1 benchmarking process can be run at a given time.
-Depending on the robosuite environment, the ros launch file will be different due to different camera extrinsics.
-Firstly, in one terminal, run the gazebo writer node
+---
+
+> If you want to follow along with training, you can run the data preparation and training steps below. Otherwise, you can download checkpoints from [here](https://drive.google.com/drive/folders/1UvvcliDObOwiM-OuNaSSUlmKURrCIMTZ?usp=sharing) and place the `trained_diffusion_policies` folder inside `robomimic-mirage`
+
+## Data Preparation
+
+### To obtain the augmented simulation data, either [follow these steps](https://github.com/GuanhuaJi/rovi-aug-extension-robosuite) to generate the data, or [download the data](https://drive.google.com/drive/folders/1rMnAwPSM_Q3gBWDjwXHsdI2VXmZmx7A9)
+
+After procuring the data, run the following
+
+```bash
+bash bash_scripts/prepare_data.sh <PATH_TO_SIMULATION_DATA>
 ```
-source mirage/mirage/ros_ws/install/setup.bash
-ros2 run gazebo_env write_data_node_robosuite_better.py
+>⚠️ Data preparation may take **~1 hour**. It is recommended to run this step inside a `tmux` session.
+---
+
+## Training
+### 1. Generate training configs
+```bash
+python scripts/create_training_configs.py
 ```
 
-Then, launch the gazebo process for the corresponding environment by first running (in a new terminal):
-```
-source mirage/mirage/ros_ws/install/setup.bash
-```
-Run either one of these depending on the environment (three piece assembly is really two piece assembly).
-```
-ros2 launch gazebo_env panda_gazebo_classic_robosuite_can.launch.py
-ros2 launch gazebo_env panda_gazebo_classic_robosuite_lift_square_stack_three_threading.launch.py
-ros2 launch gazebo_env panda_gazebo_classic_robosuite_three_piece_assembly.launch.py
+### 2. Switch file utilities for training
+```bash
+python scripts/switch_file_utils.py train
 ```
 
-For robosuite, to run an experiment (from the root of this repo), 
-```
-# Run this command below if inpainting, otherwise skip
-source mirage/mirage/ros_ws/install/setup.bash
-
-cd mirage/mirage/benchmark/robosuite
-python3 run_robosuite_benchmark.py --config config/example_config.yaml
-```
-Please take a look at the example_config and the different parameters that can be set to run different tasks, agents, and robots. For the above code to work, you must change the agents to the path for the model checkpoints in robosuite. We have provided the sample models used for evaluation in `mirage/mirage/models/{task}/{state_input}/{model_name}.pt`. The tasks are can, lift, square, stack, and two piece. The state inputs could be image_no_proprio (RGB observation only), image_proprio (RGB + proprio state), and low_dim (proprio + manipulated object position state).
-
-### Real Robot Execution
-For more details about real world robot execution with Mirage, please see the README in the real_exps folder.
-
-## Citation
-If you utilized the benchmark, please consider citing the paper:
-```
-@misc{chen2024mirage,
-      title={Mirage: Cross-Embodiment Zero-Shot Policy Transfer with Cross-Painting}, 
-      author={Lawrence Yunliang Chen and Kush Hari and Karthik Dharmarajan and Chenfeng Xu and Quan Vuong and Ken Goldberg},
-      year={2024},
-      eprint={2402.19249},
-      archivePrefix={arXiv},
-      primaryClass={cs.RO}
-}
+### 3. Launch training
+#### Option 1: Launch via script
+```bash
+python scripts/launch_training.py --gpus <GPU_IDs> --start_index <START_INDEX> --end_index <END_INDEX>
 ```
 
-## Contributing
-Feel free to raise any concerns and bugs through the [issue](https://github.com/BerkeleyAutomation/mirage/issues) portal, and submit PR with your own edits. Please reach out if some abstractions of features do not meet your needs, we are very eager to help with implementation.
+#### Option 2: Launch commands manually
+
+You can find the commands in `commands/training_commands.txt`.  Make sure to run them inside the `robomimic-mirage/robomimic/scripts` directory.
+
+---
+
+## Evaluation
+> ⚠️ **GPU Requirement**: All reported evaluations were conducted on NVIDIA A100 GPUs. We have observed that performance and results may vary across different hardware setups, so results obtained on non-A100 GPUs may differ from those reported here.
+### 1. Generate Configs
+```bash
+python scripts/switch_file_utils.py eval
+python scripts/create_mirage_configs.py
+```
+
+### 2. Standard and Patch Evals
+
+#### Switch to the original arena
+```bash
+python scripts/switch_arena.py original
+python scripts/run_evals_tmux.py --mode standard --start_index <START> --end_index <END> --gpus <GPUS>
+#index corresponds to commands in commands/standard_eval_commands.txt
+python scripts/run_evals_tmux.py --mode patch --start_index <START> --end_index <END> --gpus <GPUS>
+#index corresponds to commands in commands/patch_eval_commands.txt
+```
+### 3. Evals with Altered Lighting
+
+#### Switch to the lighting arena
+> ⚠️ Do not run this alongside standard or patch evals. Make sure they have completed running first.
+```bash
+python scripts/switch_arena.py lighting
+python scripts/run_evals_tmux.py --mode lighting --start_index <START> --end_index <END> --gpus <GPUS>
+#index corresponds to commands in commands/lighting_eval_commands.txt
+
+```
+
+## Results and Visualization
+
+### 1. Collect results
+```bash
+python scripts/get_eval_results.py
+```
+
+### 2. Plot results
+```bash
+python scripts/plot_results.py
+```
+
+>Your results may differ slightly from those reported in the paper due to nondeterminism introduced by EGL.
+
+---

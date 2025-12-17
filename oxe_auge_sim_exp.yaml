@@ -1,0 +1,16 @@
+name: oxe_auge_sim_exp
+channels:
+  - conda-forge
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - cmake>=3.28
+  - pip:
+      - torch==2.6.0
+      - torchaudio==2.6.0
+      - torchvision==0.21.0
+      - mujoco==2.3.2
+      - numpy==1.26.4
+      - opencv-python==4.11.0.86
